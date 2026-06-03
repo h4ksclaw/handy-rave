@@ -212,12 +212,14 @@
   });
 
   // --- Animation Loop ---
-  var clock = new THREE.Clock();
   var frameT = 0;
+  var lastTime = performance.now();
 
   function animate() {
     requestAnimationFrame(animate);
-    var delta = clock.getDelta();
+    var now = performance.now();
+    var delta = Math.min((now - lastTime) / 1000, 0.1);
+    lastTime = now;
     frameT += delta;
 
     // Update mixers
