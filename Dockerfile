@@ -2,9 +2,8 @@ FROM nginx:alpine
 
 COPY . /usr/share/nginx/html
 
-# Ensure proper MIME types for GLB and audio
-RUN echo "model/gltf-binary glb;" >> /etc/nginx/mime.types && \
-    echo "audio/mpeg mp3;" >> /etc/nginx/mime.types
+# Override default nginx config to add GLB mime type properly
+COPY default.conf /etc/nginx/conf.d/default.conf
 
 EXPOSE 80
 
