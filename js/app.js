@@ -132,7 +132,6 @@
     console.error('GLB load failed:', err);
   });
 
-  animate();
   setDancerCount(targetCount);
 
   function spawnDancer(index, total) {
@@ -273,5 +272,8 @@
     camera.updateProjectionMatrix();
     renderer.setSize(W, H);
   });
+
+  // Start render loop (after all vars/functions are defined)
+  animate();
 
 })();
