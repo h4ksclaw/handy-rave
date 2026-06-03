@@ -98,7 +98,7 @@
   strobeLight.position.set(0, 10, 0);
   scene.add(strobeLight);
 
-  // --- GLB Loading ---
+  // --- GLB Loading (load ONCE, clone for dancers) ---
   var dracoLoader = new THREE.DRACOLoader();
   dracoLoader.setDecoderPath('js/');
   dracoLoader.setDecoderConfig({ type: 'js' });
@@ -115,13 +115,27 @@
 
   var dancers = [];      // { model, mixer, light, angle }
   var targetCount = 6;
+  var cachedGltf = null;   // loaded once
+  var pendingDancers = [];  // queued until GLB loaded
 
-  // Load first batch on start
-  setDancerCount(targetCount);
+  // Load GLB once, then spawn dancers
+  loader.load('model.glb', function(gltf) {
+    cachedGltf = gltf;
+    // spawn any queued
+    for (var i = 0; i < pendingDancers.length; i++) {
+      spawnDancer(pendingDancers[i].index, pendingDancers[i].total);
+    }
+    pendingDancers = [];
+    var el = document.getElementById('overlay-status');
+    if (el) el.textContent = 'click anywhere to enter';
+  }, undefined, function(err) {
+    console.error('GLB load failed:', err);
+  });
+
   animate();
+  setDancerCount(targetCount);
 
-  function addDancer(index, total) {
-    // Semicircle layout
+  function spawnDancer(index, total) {
     var angleSpread = Math.PI * 0.8;
     var startAngle = Math.PI * 0.1;
     var angle = startAngle + angleSpread * (index / Math.max(total - 1, 1));
@@ -129,35 +143,47 @@
     var px = Math.sin(angle) * radius;
     var pz = -Math.cos(angle) * radius;
 
-    // Load fresh GLB for each dancer (clone() breaks skinned meshes)
-    loader.load('model.glb', function(gltf) {
-      var m = gltf.scene;
-      m.scale.set(1.3, 1.3, 1.3);
-      m.position.set(px, 0, pz);
-      m.lookAt(0, 0, 0);
-      scene.add(m);
-
-      var mixer = new THREE.AnimationMixer(m);
-      var animName = ANIMS[Math.floor(Math.random() * ANIMS.length)];
-      var clip = gltf.animations.find(function(a) { return a.name === animName; });
-      if (clip) {
-        var act = mixer.clipAction(clip);
-        act.play();
-        act.time = Math.random() * clip.duration;
+    // Clone scene from cached GLB (works in browser WebGL)
+    var m = cachedGltf.scene.clone(true);
+    // Deep-clone skinned mesh skeletons so each dancer animates independently
+    m.traverse(function(child) {
+      if (child.isSkinnedMesh) {
+        child.skeleton = child.skeleton.clone();
+        child.bind(child.skeleton, child.bindMatrix);
       }
-
-      var pl = new THREE.PointLight(DANCER_COLORS[index % DANCER_COLORS.length], 2, 8);
-      pl.position.set(px, 3, pz);
-      scene.add(pl);
-
-      dancers.push({ model: m, mixer: mixer, light: pl, angle: angle });
     });
+    m.scale.set(1.3, 1.3, 1.3);
+    m.position.set(px, 0, pz);
+    m.lookAt(0, 0, 0);
+    scene.add(m);
+
+    var mixer = new THREE.AnimationMixer(m);
+    var animName = ANIMS[Math.floor(Math.random() * ANIMS.length)];
+    var clip = cachedGltf.animations.find(function(a) { return a.name === animName; });
+    if (clip) {
+      var act = mixer.clipAction(clip);
+      act.play();
+      act.time = Math.random() * clip.duration;
+    }
+
+    var pl = new THREE.PointLight(DANCER_COLORS[index % DANCER_COLORS.length], 2, 8);
+    pl.position.set(px, 3, pz);
+    scene.add(pl);
+
+    dancers.push({ model: m, mixer: mixer, light: pl, angle: angle });
+  }
+
+  function addDancer(index, total) {
+    if (cachedGltf) {
+      spawnDancer(index, total);
+    } else {
+      pendingDancers.push({ index: index, total: total });
+    }
   }
 
   function removeDancer(d) {
     scene.remove(d.model);
     scene.remove(d.light);
-    // Dispose
     d.model.traverse(function(c) {
       if (c.geometry) c.geometry.dispose();
       if (c.material) {
