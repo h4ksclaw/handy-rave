@@ -31,14 +31,13 @@
     audioEl.volume = volumeSlider.value / 100;
   });
   audioEl.volume = 0.7;
-
   audioEl.addEventListener('ended', nextTrack);
 
   // --- Three.js Setup ---
   var W = window.innerWidth;
   var H = window.innerHeight;
 
-  var renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, powerPreference: 'high-performance' });
+  var renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: 'high-performance' });
   renderer.setSize(W, H);
   renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
   renderer.outputEncoding = THREE.sRGBEncoding;
@@ -50,7 +49,6 @@
   scene.background = new THREE.Color(0x050508);
   scene.fog = new THREE.Fog(0x050508, 8, 25);
 
-  // Dim ambient
   scene.add(new THREE.AmbientLight(0x101020, 0.3));
   var mainDir = new THREE.DirectionalLight(0xffffff, 0.3);
   mainDir.position.set(3, 10, 4);
@@ -98,12 +96,10 @@
   strobeLight.position.set(0, 10, 0);
   scene.add(strobeLight);
 
-  // --- GLB Loading (load ONCE, clone for dancers) ---
+  // --- GLB / Dancer system ---
   var dracoLoader = new THREE.DRACOLoader();
   dracoLoader.setDecoderPath('js/');
   dracoLoader.setDecoderConfig({ type: 'js' });
-  var loader = new THREE.GLTFLoader();
-  loader.setDRACOLoader(dracoLoader);
 
   var ANIMS = ['Dancing', 'Hip_Hop_Dancing', 'Macarena_Dance', 'Northern_Soul_Spin_Combo', 'Swing_Dancing', 'Ymca_Dance'];
   var DANCER_COLORS = [
@@ -113,71 +109,74 @@
     0xffaa44, 0x44ffaa
   ];
 
-  var dancers = [];      // { model, mixer, light, angle }
+  var dancers = [];
   var targetCount = 6;
-  var cachedGltf = null;   // loaded once
-  var pendingDancers = [];  // queued until GLB loaded
+  var glbBuffer = null;        // ArrayBuffer fetched once
+  var glbAnims = null;          // cached animation clips from first parse
+  var pendingCount = null;      // queued dancer count until GLB ready
 
-  // Load GLB once, then spawn dancers
-  loader.load('model.glb', function(gltf) {
-    cachedGltf = gltf;
-    // spawn any queued
-    for (var i = 0; i < pendingDancers.length; i++) {
-      spawnDancer(pendingDancers[i].index, pendingDancers[i].total);
-    }
-    pendingDancers = [];
-    var el = document.getElementById('overlay-status');
-    if (el) el.textContent = 'click anywhere to enter';
-  }, undefined, function(err) {
-    console.error('GLB load failed:', err);
-  });
-
-  setDancerCount(targetCount);
-
-  function spawnDancer(index, total) {
-    var angleSpread = Math.PI * 0.8;
-    var startAngle = Math.PI * 0.1;
-    var angle = startAngle + angleSpread * (index / Math.max(total - 1, 1));
-    var radius = 4 + total * 0.15;
-    var px = Math.sin(angle) * radius;
-    var pz = -Math.cos(angle) * radius;
-
-    // Clone scene from cached GLB (works in browser WebGL)
-    var m = cachedGltf.scene.clone(true);
-    // Deep-clone skinned mesh skeletons so each dancer animates independently
-    m.traverse(function(child) {
-      if (child.isSkinnedMesh) {
-        child.skeleton = child.skeleton.clone();
-        child.bind(child.skeleton, child.bindMatrix);
+  // Fetch GLB bytes once, parse once to cache animations, then spawn dancers
+  fetch('model.glb')
+    .then(function(r) { return r.arrayBuffer(); })
+    .then(function(buf) {
+      glbBuffer = buf;
+      // Parse once to cache animation clips
+      return new Promise(function(resolve) {
+        var ldr = new THREE.GLTFLoader();
+        ldr.setDRACOLoader(dracoLoader);
+        ldr.parse(buf.slice(0), '', function(gltf) {
+          glbAnims = gltf.animations;
+          resolve();
+        });
+      });
+    })
+    .then(function() {
+      var el = document.getElementById('overlay-status');
+      if (el) el.textContent = 'click anywhere to enter';
+      if (pendingCount !== null) {
+        setDancerCount(pendingCount);
+        pendingCount = null;
       }
+    })
+    .catch(function(err) {
+      console.error('GLB load failed:', err);
+      var el = document.getElementById('overlay-status');
+      if (el) el.textContent = 'failed to load dancers :(';
     });
-    m.scale.set(1.3, 1.3, 1.3);
-    m.position.set(px, 0, pz);
-    m.lookAt(0, 0, 0);
-    scene.add(m);
 
-    var mixer = new THREE.AnimationMixer(m);
-    var animName = ANIMS[Math.floor(Math.random() * ANIMS.length)];
-    var clip = cachedGltf.animations.find(function(a) { return a.name === animName; });
-    if (clip) {
-      var act = mixer.clipAction(clip);
-      act.play();
-      act.time = Math.random() * clip.duration;
-    }
+  // Parse a fresh copy from the cached ArrayBuffer and add to scene
+  function spawnDancer(index, total) {
+    var ldr = new THREE.GLTFLoader();
+    ldr.setDRACOLoader(dracoLoader);
+    ldr.parse(glbBuffer.slice(0), '', function(gltf) {
+      var angleSpread = Math.PI * 0.8;
+      var startAngle = Math.PI * 0.1;
+      var angle = startAngle + angleSpread * (index / Math.max(total - 1, 1));
+      var radius = 4 + total * 0.15;
+      var px = Math.sin(angle) * radius;
+      var pz = -Math.cos(angle) * radius;
 
-    var pl = new THREE.PointLight(DANCER_COLORS[index % DANCER_COLORS.length], 2, 8);
-    pl.position.set(px, 3, pz);
-    scene.add(pl);
+      var m = gltf.scene;
+      m.scale.set(1.3, 1.3, 1.3);
+      m.position.set(px, 0, pz);
+      m.lookAt(0, 0, 0);
+      scene.add(m);
 
-    dancers.push({ model: m, mixer: mixer, light: pl, angle: angle });
-  }
+      var mixer = new THREE.AnimationMixer(m);
+      var animName = ANIMS[Math.floor(Math.random() * ANIMS.length)];
+      var clip = gltfAnims.find(function(a) { return a.name === animName; });
+      if (clip) {
+        var act = mixer.clipAction(clip);
+        act.play();
+        act.time = Math.random() * clip.duration;
+      }
 
-  function addDancer(index, total) {
-    if (cachedGltf) {
-      spawnDancer(index, total);
-    } else {
-      pendingDancers.push({ index: index, total: total });
-    }
+      var pl = new THREE.PointLight(DANCER_COLORS[index % DANCER_COLORS.length], 2, 8);
+      pl.position.set(px, 3, pz);
+      scene.add(pl);
+
+      dancers.push({ model: m, mixer: mixer, light: pl, angle: angle });
+    });
   }
 
   function removeDancer(d) {
@@ -186,18 +185,22 @@
     d.model.traverse(function(c) {
       if (c.geometry) c.geometry.dispose();
       if (c.material) {
-        if (Array.isArray(c.material)) c.material.forEach(function(m) { m.dispose(); });
+        if (Array.isArray(c.material)) c.material.forEach(function(mt) { mt.dispose(); });
         else c.material.dispose();
       }
     });
   }
 
   function setDancerCount(count) {
+    if (!glbBuffer) {
+      pendingCount = count;
+      return;
+    }
     while (dancers.length > count) {
       removeDancer(dancers.pop());
     }
     while (dancers.length < count) {
-      addDancer(dancers.length, count);
+      spawnDancer(dancers.length, count);
     }
   }
 
@@ -209,6 +212,9 @@
     countDisplay.textContent = targetCount;
     setDancerCount(targetCount);
   });
+
+  // Initial dancer count
+  setDancerCount(targetCount);
 
   // --- Animation Loop ---
   var frameT = 0;
@@ -234,7 +240,7 @@
     camera.position.y = 2.5 + Math.sin(frameT * 0.2) * 0.8;
     camera.lookAt(0, 0.8, 0);
 
-    // Sweep spotlights (always pointing down)
+    // Sweep spotlights
     for (var s = 0; s < raveSpots.length; s++) {
       var sa = frameT * (0.4 + s * 0.08) + s * Math.PI / 4;
       raveSpots[s].target.position.set(Math.sin(sa) * 3, 0, Math.cos(sa) * 3);
@@ -273,7 +279,7 @@
     renderer.setSize(W, H);
   });
 
-  // Start render loop (after all vars/functions are defined)
+  // Start render loop
   animate();
 
 })();
