@@ -112,25 +112,17 @@
   var dancers = [];
   var targetCount = 6;
   var glbBuffer = null;        // ArrayBuffer fetched once
-  var glbAnims = null;          // cached animation clips from first parse
-  var pendingCount = null;      // queued dancer count until GLB ready
+  var pendingCount = null;    // queued count until GLB ready
+  var spawning = 0;           // number of in-flight async parses
 
-  // Fetch GLB bytes once, parse once to cache animations, then spawn dancers
+  // Fetch GLB bytes once (2.3MB network request, then all parsing is in-memory)
   fetch('model.glb')
-    .then(function(r) { return r.arrayBuffer(); })
+    .then(function(r) {
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      return r.arrayBuffer();
+    })
     .then(function(buf) {
       glbBuffer = buf;
-      // Parse once to cache animation clips
-      return new Promise(function(resolve) {
-        var ldr = new THREE.GLTFLoader();
-        ldr.setDRACOLoader(dracoLoader);
-        ldr.parse(buf.slice(0), '', function(gltf) {
-          glbAnims = gltf.animations;
-          resolve();
-        });
-      });
-    })
-    .then(function() {
       var el = document.getElementById('overlay-status');
       if (el) el.textContent = 'click anywhere to enter';
       if (pendingCount !== null) {
@@ -144,11 +136,16 @@
       if (el) el.textContent = 'failed to load dancers :(';
     });
 
-  // Parse a fresh copy from the cached ArrayBuffer and add to scene
+  // Parse a fresh GLB from cached ArrayBuffer and spawn one dancer
   function spawnDancer(index, total) {
+    spawning++;
     var ldr = new THREE.GLTFLoader();
     ldr.setDRACOLoader(dracoLoader);
     ldr.parse(glbBuffer.slice(0), '', function(gltf) {
+      spawning--;
+      // If target changed while we were parsing, discard this dancer
+      if (dancers.length >= targetCount) return;
+
       var angleSpread = Math.PI * 0.8;
       var startAngle = Math.PI * 0.1;
       var angle = startAngle + angleSpread * (index / Math.max(total - 1, 1));
@@ -163,8 +160,9 @@
       scene.add(m);
 
       var mixer = new THREE.AnimationMixer(m);
+      // Use animations from THIS parse (not a different parse's clips)
       var animName = ANIMS[Math.floor(Math.random() * ANIMS.length)];
-      var clip = gltfAnims.find(function(a) { return a.name === animName; });
+      var clip = gltf.animations.find(function(a) { return a.name === animName; });
       if (clip) {
         var act = mixer.clipAction(clip);
         act.play();
@@ -176,6 +174,9 @@
       scene.add(pl);
 
       dancers.push({ model: m, mixer: mixer, light: pl, angle: angle });
+    }, function(err) {
+      spawning--;
+      console.error('GLB parse error:', err);
     });
   }
 
@@ -196,11 +197,14 @@
       pendingCount = count;
       return;
     }
+    targetCount = count;
+    // Remove excess (sync)
     while (dancers.length > count) {
       removeDancer(dancers.pop());
     }
-    while (dancers.length < count) {
-      spawnDancer(dancers.length, count);
+    // Spawn missing (async, but cap at what we need)
+    while (dancers.length + spawning < count) {
+      spawnDancer(dancers.length + spawning, count);
     }
   }
 
@@ -208,9 +212,9 @@
   var slider = document.getElementById('slider');
   var countDisplay = document.getElementById('handy-count');
   slider.addEventListener('input', function() {
-    targetCount = parseInt(slider.value);
-    countDisplay.textContent = targetCount;
-    setDancerCount(targetCount);
+    var newCount = parseInt(slider.value);
+    countDisplay.textContent = newCount;
+    setDancerCount(newCount);
   });
 
   // Initial dancer count
