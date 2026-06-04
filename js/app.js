@@ -18,7 +18,6 @@
 
   // --- Audio ---
   var TRACKS = [
-    'audio/rave-main.mp3',
     'audio/m83-midnight-city.mp3',
     'audio/darude-sandstorm.mp3',
     'audio/prodigy-oxygen.mp3',
