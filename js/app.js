@@ -2,18 +2,35 @@
 (function() {
   'use strict';
 
-  // HSL (degrees, 0-1, 0-1) → hex int
-  function HSLToHex(h, s, l) {
-    s /= 100; l /= 100;
-    var a = s * Math.min(l, 1 - l);
-    function f(n) {
-      var k = (n + h / 30) % 12;
-      return l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+  // SkinnedMesh-safe clone: shares geometry + materials, rebuilds skeleton bone
+  // refs against the cloned bone hierarchy. Without this, cloned skinned meshes
+  // all reference the source skeleton and animate as one.
+  function parallelTraverse(a, b, callback) {
+    callback(a, b);
+    for (var i = 0; i < a.children.length; i++) {
+      parallelTraverse(a.children[i], b.children[i], callback);
     }
-    var r = Math.round(f(0) * 255);
-    var g = Math.round(f(8) * 255);
-    var b = Math.round(f(4) * 255);
-    return (r << 16) | (g << 8) | b;
+  }
+
+  function cloneSkinned(source) {
+    var sourceLookup = new Map();
+    var cloneLookup = new Map();
+    var clone = source.clone();
+    parallelTraverse(source, clone, function(sourceNode, clonedNode) {
+      sourceLookup.set(clonedNode, sourceNode);
+      cloneLookup.set(sourceNode, clonedNode);
+    });
+    clone.traverse(function(node) {
+      if (!node.isSkinnedMesh) return;
+      var sourceMesh = sourceLookup.get(node);
+      node.skeleton = sourceMesh.skeleton.clone();
+      node.bindMatrix.copy(sourceMesh.bindMatrix);
+      node.skeleton.bones = sourceMesh.skeleton.bones.map(function(bone) {
+        return cloneLookup.get(bone);
+      });
+      node.bind(node.skeleton, node.bindMatrix);
+    });
+    return clone;
   }
 
   // --- Audio ---
@@ -25,12 +42,15 @@
     'audio/eric-prydz-call-on-me.mp3',
     'audio/faithless-insomnia.mp3'
   ];
+  var RADIO_URL = 'https://radio.h4ks.com/radio';
   var currentTrackIdx = 0;
+  var radioMode = false;
   var audioEl = document.getElementById('audio');
   var trackInfo = document.getElementById('track-info');
   var volumeSlider = document.getElementById('volume');
   var btnPrev = document.getElementById('btn-prev');
   var btnNext = document.getElementById('btn-next');
+  var radioCheck = document.getElementById('radio-check');
   var started = false;
 
   function loadTrack(idx) {
@@ -41,24 +61,44 @@
   }
 
   function nextTrack() {
+    if (radioMode) return;
     loadTrack(currentTrackIdx + 1);
     audioEl.play().catch(function() {});
   }
 
   function prevTrack() {
+    if (radioMode) return;
     loadTrack(currentTrackIdx - 1);
     audioEl.play().catch(function() {});
   }
 
+  // Radio mode swaps the track files for the live stream and disables the
+  // transport controls (next/prev are meaningless for a single live feed).
+  function setRadioMode(on) {
+    radioMode = on;
+    btnPrev.disabled = on;
+    btnNext.disabled = on;
+    if (on) {
+      audioEl.src = RADIO_URL;
+      audioEl.load();
+      trackInfo.textContent = 'live radio';
+    } else {
+      loadTrack(currentTrackIdx);
+    }
+    if (started) audioEl.play().catch(function() {});
+  }
+
   btnNext.addEventListener('click', nextTrack);
   btnPrev.addEventListener('click', prevTrack);
+  radioCheck.addEventListener('change', function() {
+    setRadioMode(radioCheck.checked);
+  });
 
   volumeSlider.addEventListener('input', function() {
     audioEl.volume = volumeSlider.value / 100;
   });
   audioEl.volume = 0.7;
 
-  // Auto-advance when track ends (NO loop attribute on audio element)
   audioEl.addEventListener('ended', nextTrack);
 
   // --- Three.js Setup ---
@@ -77,34 +117,40 @@
   scene.background = new THREE.Color(0x050508);
   scene.fog = new THREE.Fog(0x050508, 8, 30);
 
-  scene.add(new THREE.AmbientLight(0x101020, 0.3));
-  var mainDir = new THREE.DirectionalLight(0xffffff, 0.3);
-  mainDir.position.set(3, 10, 4);
-  scene.add(mainDir);
-
   var camera = new THREE.PerspectiveCamera(50, W / H, 0.1, 100);
   camera.position.set(0, 3, 10);
   camera.lookAt(0, 1, 0);
 
   // Reflective floor
   var floorMat = new THREE.MeshStandardMaterial({ color: 0x0a0a15, roughness: 0.3, metalness: 0.8 });
-  var floor = new THREE.Mesh(new THREE.CircleGeometry(30, 64), floorMat);
+  var floor = new THREE.Mesh(new THREE.CircleGeometry(30, 48), floorMat);
   floor.rotation.x = -Math.PI / 2;
   scene.add(floor);
 
-  // Spotlight rig
-  var spotColors = [0xff0044, 0x00ff88, 0x4400ff, 0xff8800, 0xff00ff, 0x00ffff, 0xff0066, 0x66ff00];
+  // --- Lighting rig: fixed cost, independent of dancer count ---
+  // Forward rendering evaluates every light per fragment, so the light count is
+  // kept small and constant rather than scaling with dancers.
+  scene.add(new THREE.AmbientLight(0x202030, 0.6));
+  var fillDir = new THREE.DirectionalLight(0xffffff, 0.35);
+  fillDir.position.set(3, 10, 4);
+  scene.add(fillDir);
+
+  var spotColors = [0xff0044, 0x00ff88, 0x4400ff, 0xff8800];
   var raveSpots = [];
-  for (var s = 0; s < 8; s++) {
-    var sp = new THREE.SpotLight(spotColors[s], 2, 25, Math.PI / 7, 0.5, 1);
-    sp.position.set(Math.cos(s * Math.PI / 4) * 7, 9, Math.sin(s * Math.PI / 4) * 7);
+  for (var s = 0; s < spotColors.length; s++) {
+    var sp = new THREE.SpotLight(spotColors[s], 3, 30, Math.PI / 6, 0.5, 1);
+    sp.position.set(Math.cos(s * Math.PI / 2) * 8, 10, Math.sin(s * Math.PI / 2) * 8);
     sp.target.position.set(0, 0, 0);
     scene.add(sp);
     scene.add(sp.target);
     raveSpots.push(sp);
   }
 
-  // Lasers
+  var strobeLight = new THREE.PointLight(0xffffff, 0, 25);
+  strobeLight.position.set(0, 10, 0);
+  scene.add(strobeLight);
+
+  // Lasers (unlit, cheap)
   var laserGroup = new THREE.Group();
   for (var l = 0; l < 12; l++) {
     var laserGeo = new THREE.CylinderGeometry(0.015, 0.015, 20, 4);
@@ -119,119 +165,79 @@
   }
   scene.add(laserGroup);
 
-  // Strobe
-  var strobeLight = new THREE.PointLight(0xffffff, 0, 20);
-  strobeLight.position.set(0, 10, 0);
-  scene.add(strobeLight);
-
   // --- GLB / Dancer system ---
   var dracoLoader = new THREE.DRACOLoader();
   dracoLoader.setDecoderPath('js/');
   dracoLoader.setDecoderConfig({ type: 'js' });
 
   var ANIMS = ['Dancing', 'Hip_Hop_Dancing', 'Macarena_Dance', 'Northern_Soul_Spin_Combo', 'Swing_Dancing', 'Ymca_Dance'];
-  var DANCER_COLORS = [];
-  for (var c = 0; c < 50; c++) {
-    var hue = (c * 137.508) % 360; // golden angle for max spread
-    DANCER_COLORS.push(HSLToHex(hue, 90, 55));
-  }
 
   var dancers = [];
   var targetCount = 6;
-  var glbBuffer = null;
+  var template = null;      // { scene, animations } parsed once
   var pendingCount = null;
-  var spawning = 0;
 
-  // Fetch GLB bytes once (2.3MB), then parse fresh copies in memory
-  fetch('model.glb')
-    .then(function(r) {
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      return r.arrayBuffer();
-    })
-    .then(function(buf) {
-      glbBuffer = buf;
+  // Parse the GLB exactly once. Every dancer is a skeleton-aware clone of this
+  // template, sharing its geometry buffers — no re-decode, no per-dancer upload.
+  new THREE.GLTFLoader()
+    .setDRACOLoader(dracoLoader)
+    .load('model.glb', function(gltf) {
+      template = { scene: gltf.scene, animations: gltf.animations };
       var el = document.getElementById('overlay-status');
       if (el) el.textContent = 'click anywhere to enter';
       if (pendingCount !== null) {
         setDancerCount(pendingCount);
         pendingCount = null;
+      } else {
+        setDancerCount(targetCount);
       }
-    })
-    .catch(function(err) {
+    }, undefined, function(err) {
       console.error('GLB load failed:', err);
       var el = document.getElementById('overlay-status');
       if (el) el.textContent = 'failed to load dancers :(';
     });
 
-  // Calculate position for dancer index out of total
   // Arc layout that expands radius and angle spread with count
   function getDancerPos(index, total) {
     if (total <= 1) return { x: 0, z: -4 };
-
-    // Arc from -70deg to +70deg (140deg spread), radius grows with count
     var spreadDeg = Math.min(140, 60 + total * 8);
     var spreadRad = spreadDeg * Math.PI / 180;
     var radius = 4 + total * 0.4;
-
-    var t = total <= 1 ? 0 : index / (total - 1); // 0..1
+    var t = index / (total - 1);
     var angle = -spreadRad / 2 + t * spreadRad;
-
-    return {
-      x: Math.sin(angle) * radius,
-      z: -Math.cos(angle) * radius
-    };
+    return { x: Math.sin(angle) * radius, z: -Math.cos(angle) * radius };
   }
 
   function spawnDancer(index, total) {
-    spawning++;
-    var ldr = new THREE.GLTFLoader();
-    ldr.setDRACOLoader(dracoLoader);
-    ldr.parse(glbBuffer.slice(0), '', function(gltf) {
-      spawning--;
-      if (dancers.length >= targetCount) return;
+    var m = cloneSkinned(template.scene);
+    var pos = getDancerPos(index, total);
+    m.scale.set(1.3, 1.3, 1.3);
+    m.position.set(pos.x, 0, pos.z);
+    m.lookAt(0, 0, 0);
+    // Original textures kept as-is; the sweeping spotlight rig provides the color.
+    scene.add(m);
 
-      var pos = getDancerPos(index, total);
+    var mixer = new THREE.AnimationMixer(m);
+    var animName = ANIMS[Math.floor(Math.random() * ANIMS.length)];
+    var clip = template.animations.find(function(a) { return a.name === animName; });
+    if (clip) {
+      var act = mixer.clipAction(clip);
+      act.play();
+      act.time = Math.random() * clip.duration;
+    }
 
-      var m = gltf.scene;
-      m.scale.set(1.3, 1.3, 1.3);
-      m.position.set(pos.x, 0, pos.z);
-      m.lookAt(0, 0, 0);
-      scene.add(m);
-
-      var mixer = new THREE.AnimationMixer(m);
-      var animName = ANIMS[Math.floor(Math.random() * ANIMS.length)];
-      var clip = gltf.animations.find(function(a) { return a.name === animName; });
-      if (clip) {
-        var act = mixer.clipAction(clip);
-        act.play();
-        act.time = Math.random() * clip.duration;
-      }
-
-      var pl = new THREE.PointLight(DANCER_COLORS[index % DANCER_COLORS.length], 2, 8);
-      pl.position.set(pos.x, 3, pos.z);
-      scene.add(pl);
-
-      dancers.push({ model: m, mixer: mixer, light: pl, index: index, total: total });
-    }, function(err) {
-      spawning--;
-      console.error('GLB parse error:', err);
-    });
+    dancers.push({ model: m, mixer: mixer, index: index });
   }
 
   function removeDancer(d) {
+    // Geometry and materials are shared with the template across all clones, so
+    // nothing is disposed here — just detach and stop animating.
     scene.remove(d.model);
-    scene.remove(d.light);
-    d.model.traverse(function(c) {
-      if (c.geometry) c.geometry.dispose();
-      if (c.material) {
-        if (Array.isArray(c.material)) c.material.forEach(function(mt) { mt.dispose(); });
-        else c.material.dispose();
-      }
-    });
+    d.mixer.stopAllAction();
   }
 
   function setDancerCount(count) {
-    if (!glbBuffer) {
+    if (!template) {
       pendingCount = count;
       return;
     }
@@ -239,18 +245,21 @@
     while (dancers.length > count) {
       removeDancer(dancers.pop());
     }
-    while (dancers.length + spawning < count) {
-      spawnDancer(dancers.length + spawning, count);
+    while (dancers.length < count) {
+      spawnDancer(dancers.length, count);
     }
+    repositionDancers();
+    // Layout radius and camera distance both grow with count, so push fog far out
+    // to keep the back of the crowd from dissolving into the background.
+    scene.fog.far = Math.max(30, 16 + count * 0.9);
   }
 
-  // Reposition all dancers (e.g. when count changes)
   function repositionDancers() {
     var total = dancers.length;
     for (var i = 0; i < total; i++) {
       var pos = getDancerPos(i, total);
       dancers[i].model.position.set(pos.x, 0, pos.z);
-      dancers[i].light.position.set(pos.x, 3, pos.z);
+      dancers[i].model.lookAt(0, 0, 0);
     }
   }
 
@@ -261,12 +270,7 @@
     var newCount = parseInt(slider.value);
     countDisplay.textContent = newCount;
     setDancerCount(newCount);
-    // Reposition after a tick so new dancers have spawned
-    setTimeout(repositionDancers, 100);
-    setTimeout(repositionDancers, 500);
   });
-
-  setDancerCount(targetCount);
 
   // --- Animation Loop ---
   var frameT = 0;
@@ -293,16 +297,16 @@
 
     // Sweep spotlights
     for (var s = 0; s < raveSpots.length; s++) {
-      var sa = frameT * (0.4 + s * 0.08) + s * Math.PI / 4;
+      var sa = frameT * (0.4 + s * 0.08) + s * Math.PI / 2;
       raveSpots[s].target.position.set(Math.sin(sa) * 3, 0, Math.cos(sa) * 3);
-      raveSpots[s].intensity = 2 + Math.sin(frameT * 1.5 + s) * 1.5;
+      raveSpots[s].intensity = 2.5 + Math.sin(frameT * 1.5 + s) * 1.5;
     }
 
     // Rotate lasers
     laserGroup.rotation.y = frameT * 0.25;
-    for (var l = 0; l < laserGroup.children.length; l++) {
-      laserGroup.children[l].rotation.x = Math.sin(frameT * 1.2 + l * 0.7) * 0.35;
-      laserGroup.children[l].material.opacity = 0.2 + Math.sin(frameT * 4 + l) * 0.2;
+    for (var ls = 0; ls < laserGroup.children.length; ls++) {
+      laserGroup.children[ls].rotation.x = Math.sin(frameT * 1.2 + ls * 0.7) * 0.35;
+      laserGroup.children[ls].material.opacity = 0.2 + Math.sin(frameT * 4 + ls) * 0.2;
     }
 
     // Strobe
@@ -317,7 +321,12 @@
     if (started) return;
     started = true;
     overlay.classList.add('hidden');
-    loadTrack(0);
+    if (radioMode) {
+      audioEl.src = RADIO_URL;
+      audioEl.load();
+    } else {
+      loadTrack(0);
+    }
     audioEl.play().catch(function() {});
   });
 
@@ -330,7 +339,6 @@
     renderer.setSize(W, H);
   });
 
-  // Start render loop
   animate();
 
 })();
