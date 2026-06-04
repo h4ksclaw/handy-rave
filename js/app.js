@@ -19,9 +19,12 @@
   // --- Audio ---
   var TRACKS = [
     'audio/rave-main.mp3',
-    'audio/rave-1.mp3',
-    'audio/rave-2.mp3',
-    'audio/rave-3.mp3'
+    'audio/m83-midnight-city.mp3',
+    'audio/darude-sandstorm.mp3',
+    'audio/prodigy-oxygen.mp3',
+    'audio/benny-benassi-satisfaction.mp3',
+    'audio/eric-prydz-call-on-me.mp3',
+    'audio/faithless-insomnia.mp3'
   ];
   var currentTrackIdx = 0;
   var audioEl = document.getElementById('audio');
