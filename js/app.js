@@ -2,6 +2,20 @@
 (function() {
   'use strict';
 
+  // HSL (degrees, 0-1, 0-1) → hex int
+  function HSLToHex(h, s, l) {
+    s /= 100; l /= 100;
+    var a = s * Math.min(l, 1 - l);
+    function f(n) {
+      var k = (n + h / 30) % 12;
+      return l - a * Math.max(Math.min(k - 3, 9 - k, 1), -1);
+    }
+    var r = Math.round(f(0) * 255);
+    var g = Math.round(f(8) * 255);
+    var b = Math.round(f(4) * 255);
+    return (r << 16) | (g << 8) | b;
+  }
+
   // --- Audio ---
   var TRACKS = [
     'audio/rave-main.mp3',
@@ -114,12 +128,11 @@
   dracoLoader.setDecoderConfig({ type: 'js' });
 
   var ANIMS = ['Dancing', 'Hip_Hop_Dancing', 'Macarena_Dance', 'Northern_Soul_Spin_Combo', 'Swing_Dancing', 'Ymca_Dance'];
-  var DANCER_COLORS = [
-    0xff4444, 0x44ff44, 0x4488ff, 0xffff44, 0xff44ff, 0x44ffff,
-    0xff8844, 0x88ff44, 0x4488ff, 0xff4488, 0x8844ff, 0x44ff88,
-    0xff6644, 0x44ff66, 0x6644ff, 0xff4466, 0x66ff44, 0x4466ff,
-    0xffaa44, 0x44ffaa
-  ];
+  var DANCER_COLORS = [];
+  for (var c = 0; c < 50; c++) {
+    var hue = (c * 137.508) % 360; // golden angle for max spread
+    DANCER_COLORS.push(HSLToHex(hue, 90, 55));
+  }
 
   var dancers = [];
   var targetCount = 6;
