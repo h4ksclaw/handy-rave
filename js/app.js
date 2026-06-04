@@ -13,10 +13,12 @@
   var audioEl = document.getElementById('audio');
   var trackInfo = document.getElementById('track-info');
   var volumeSlider = document.getElementById('volume');
+  var btnPrev = document.getElementById('btn-prev');
+  var btnNext = document.getElementById('btn-next');
   var started = false;
 
   function loadTrack(idx) {
-    currentTrackIdx = idx % TRACKS.length;
+    currentTrackIdx = ((idx % TRACKS.length) + TRACKS.length) % TRACKS.length;
     audioEl.src = TRACKS[currentTrackIdx];
     audioEl.load();
     trackInfo.textContent = 'track ' + (currentTrackIdx + 1) + ' / ' + TRACKS.length;
@@ -24,13 +26,23 @@
 
   function nextTrack() {
     loadTrack(currentTrackIdx + 1);
-    audioEl.play();
+    audioEl.play().catch(function() {});
   }
+
+  function prevTrack() {
+    loadTrack(currentTrackIdx - 1);
+    audioEl.play().catch(function() {});
+  }
+
+  btnNext.addEventListener('click', nextTrack);
+  btnPrev.addEventListener('click', prevTrack);
 
   volumeSlider.addEventListener('input', function() {
     audioEl.volume = volumeSlider.value / 100;
   });
   audioEl.volume = 0.7;
+
+  // Auto-advance when track ends (NO loop attribute on audio element)
   audioEl.addEventListener('ended', nextTrack);
 
   // --- Three.js Setup ---
@@ -47,7 +59,7 @@
 
   var scene = new THREE.Scene();
   scene.background = new THREE.Color(0x050508);
-  scene.fog = new THREE.Fog(0x050508, 8, 25);
+  scene.fog = new THREE.Fog(0x050508, 8, 30);
 
   scene.add(new THREE.AmbientLight(0x101020, 0.3));
   var mainDir = new THREE.DirectionalLight(0xffffff, 0.3);
@@ -111,11 +123,11 @@
 
   var dancers = [];
   var targetCount = 6;
-  var glbBuffer = null;        // ArrayBuffer fetched once
-  var pendingCount = null;    // queued count until GLB ready
-  var spawning = 0;           // number of in-flight async parses
+  var glbBuffer = null;
+  var pendingCount = null;
+  var spawning = 0;
 
-  // Fetch GLB bytes once (2.3MB network request, then all parsing is in-memory)
+  // Fetch GLB bytes once (2.3MB), then parse fresh copies in memory
   fetch('model.glb')
     .then(function(r) {
       if (!r.ok) throw new Error('HTTP ' + r.status);
@@ -136,31 +148,42 @@
       if (el) el.textContent = 'failed to load dancers :(';
     });
 
-  // Parse a fresh GLB from cached ArrayBuffer and spawn one dancer
+  // Calculate position for dancer index out of total
+  // Arc layout that expands radius and angle spread with count
+  function getDancerPos(index, total) {
+    if (total <= 1) return { x: 0, z: -4 };
+
+    // Arc from -70deg to +70deg (140deg spread), radius grows with count
+    var spreadDeg = Math.min(140, 60 + total * 8);
+    var spreadRad = spreadDeg * Math.PI / 180;
+    var radius = 4 + total * 0.4;
+
+    var t = total <= 1 ? 0 : index / (total - 1); // 0..1
+    var angle = -spreadRad / 2 + t * spreadRad;
+
+    return {
+      x: Math.sin(angle) * radius,
+      z: -Math.cos(angle) * radius
+    };
+  }
+
   function spawnDancer(index, total) {
     spawning++;
     var ldr = new THREE.GLTFLoader();
     ldr.setDRACOLoader(dracoLoader);
     ldr.parse(glbBuffer.slice(0), '', function(gltf) {
       spawning--;
-      // If target changed while we were parsing, discard this dancer
       if (dancers.length >= targetCount) return;
 
-      var angleSpread = Math.PI * 0.8;
-      var startAngle = Math.PI * 0.1;
-      var angle = startAngle + angleSpread * (index / Math.max(total - 1, 1));
-      var radius = 4 + total * 0.15;
-      var px = Math.sin(angle) * radius;
-      var pz = -Math.cos(angle) * radius;
+      var pos = getDancerPos(index, total);
 
       var m = gltf.scene;
       m.scale.set(1.3, 1.3, 1.3);
-      m.position.set(px, 0, pz);
+      m.position.set(pos.x, 0, pos.z);
       m.lookAt(0, 0, 0);
       scene.add(m);
 
       var mixer = new THREE.AnimationMixer(m);
-      // Use animations from THIS parse (not a different parse's clips)
       var animName = ANIMS[Math.floor(Math.random() * ANIMS.length)];
       var clip = gltf.animations.find(function(a) { return a.name === animName; });
       if (clip) {
@@ -170,10 +193,10 @@
       }
 
       var pl = new THREE.PointLight(DANCER_COLORS[index % DANCER_COLORS.length], 2, 8);
-      pl.position.set(px, 3, pz);
+      pl.position.set(pos.x, 3, pos.z);
       scene.add(pl);
 
-      dancers.push({ model: m, mixer: mixer, light: pl, angle: angle });
+      dancers.push({ model: m, mixer: mixer, light: pl, index: index, total: total });
     }, function(err) {
       spawning--;
       console.error('GLB parse error:', err);
@@ -198,13 +221,21 @@
       return;
     }
     targetCount = count;
-    // Remove excess (sync)
     while (dancers.length > count) {
       removeDancer(dancers.pop());
     }
-    // Spawn missing (async, but cap at what we need)
     while (dancers.length + spawning < count) {
       spawnDancer(dancers.length + spawning, count);
+    }
+  }
+
+  // Reposition all dancers (e.g. when count changes)
+  function repositionDancers() {
+    var total = dancers.length;
+    for (var i = 0; i < total; i++) {
+      var pos = getDancerPos(i, total);
+      dancers[i].model.position.set(pos.x, 0, pos.z);
+      dancers[i].light.position.set(pos.x, 3, pos.z);
     }
   }
 
@@ -215,9 +246,11 @@
     var newCount = parseInt(slider.value);
     countDisplay.textContent = newCount;
     setDancerCount(newCount);
+    // Reposition after a tick so new dancers have spawned
+    setTimeout(repositionDancers, 100);
+    setTimeout(repositionDancers, 500);
   });
 
-  // Initial dancer count
   setDancerCount(targetCount);
 
   // --- Animation Loop ---
@@ -231,14 +264,13 @@
     lastTime = now;
     frameT += delta;
 
-    // Update mixers
     for (var i = 0; i < dancers.length; i++) {
       dancers[i].mixer.update(delta);
     }
 
     // Slow cinematic camera orbit
     var a = frameT * 0.12;
-    var dist = 8 + dancers.length * 0.3;
+    var dist = 8 + dancers.length * 0.4;
     camera.position.x = Math.sin(a) * dist;
     camera.position.z = Math.cos(a) * dist;
     camera.position.y = 2.5 + Math.sin(frameT * 0.2) * 0.8;
